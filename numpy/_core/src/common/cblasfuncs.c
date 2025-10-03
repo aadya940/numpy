@@ -65,29 +65,37 @@ gemm(int typenum, enum CBLAS_ORDER order,
 static void
 gemv(int typenum, enum CBLAS_ORDER order, enum CBLAS_TRANSPOSE trans,
      PyArrayObject *A, npy_intp lda, PyArrayObject *X, npy_intp incX,
-     PyArrayObject *R)
+     PyArrayObject *R, npy_intp incY)
 {
     const void *Adata = PyArray_DATA(A), *Xdata = PyArray_DATA(X);
     void *Rdata = PyArray_DATA(R);
+
+    /* Adjust pointer if incY is negative
+    */
+    if (incY < 0) {
+        npy_intp elem_size = PyArray_ITEMSIZE(R);
+        npy_intp n_elements = PyArray_DIM(R, 0);
+        Rdata = (char*)Rdata + (n_elements - 1) * elem_size;
+    }
 
     npy_intp m = PyArray_DIM(A, 0), n = PyArray_DIM(A, 1);
 
     switch (typenum) {
         case NPY_DOUBLE:
             CBLAS_FUNC(cblas_dgemv)(order, trans, m, n, 1., Adata, lda, Xdata, incX,
-                        0., Rdata, 1);
+                        0., Rdata, incY);
             break;
         case NPY_FLOAT:
             CBLAS_FUNC(cblas_sgemv)(order, trans, m, n, 1.f, Adata, lda, Xdata, incX,
-                        0.f, Rdata, 1);
+                        0.f, Rdata, incY);
             break;
         case NPY_CDOUBLE:
             CBLAS_FUNC(cblas_zgemv)(order, trans, m, n, oneD, Adata, lda, Xdata, incX,
-                        zeroD, Rdata, 1);
+                        zeroD, Rdata, incY);
             break;
         case NPY_CFLOAT:
             CBLAS_FUNC(cblas_cgemv)(order, trans, m, n, oneF, Adata, lda, Xdata, incX,
-                        zeroF, Rdata, 1);
+                        zeroF, Rdata, incY);
             break;
     }
 }
@@ -237,15 +245,33 @@ cblas_matrixproduct(int typenum, PyArrayObject *ap1, PyArrayObject *ap2,
     npy_intp numbytes;
     MatrixShape ap1shape, ap2shape;
 
-    if (_bad_strides(ap1)) {
-            PyObject *op1 = PyArray_NewCopy(ap1, NPY_ANYORDER);
+    ap1shape = _select_matrix_shape(ap1);
+    ap2shape = _select_matrix_shape(ap2);
 
+    int __is_2d_flipped_matrix = 0;
+
+    if (_bad_strides(ap1)) {
+            PyArrayObject *op1;
+            // Leave out the case of A[::-1].
+            if (ap1shape == _matrix && (
+                PyArray_NDIM(ap1) == 2 && 
+                PyArray_STRIDES(ap1)[0] < 0 &&
+                PyArray_STRIDES(ap1)[1] > 0
+            )) {
+                __is_2d_flipped_matrix = 1;
+                op1 = ap1;
+                Py_INCREF(op1);
+            } else {
+                op1 = PyArray_NewCopy(ap1, NPY_ANYORDER);
+            }
+        
             Py_DECREF(ap1);
             ap1 = (PyArrayObject *)op1;
             if (ap1 == NULL) {
                 goto fail;
             }
     }
+    // Copy this always if bad strides.
     if (_bad_strides(ap2)) {
             PyObject *op2 = PyArray_NewCopy(ap2, NPY_ANYORDER);
 
@@ -255,8 +281,6 @@ cblas_matrixproduct(int typenum, PyArrayObject *ap1, PyArrayObject *ap2,
                 goto fail;
             }
     }
-    ap1shape = _select_matrix_shape(ap1);
-    ap2shape = _select_matrix_shape(ap2);
 
     if (ap1shape == _scalar || ap2shape == _scalar) {
         PyArrayObject *oap1, *oap2;
@@ -556,7 +580,13 @@ cblas_matrixproduct(int typenum, PyArrayObject *ap1, PyArrayObject *ap2,
         enum CBLAS_ORDER Order;
         npy_intp ap2s;
 
+        int incY = 1;
+
         if (!PyArray_ISONESEGMENT(ap1)) {
+            //  Flipped matrices must be one segment to use this optimization.
+            if (__is_2d_flipped_matrix) {
+                __is_2d_flipped_matrix = 0;
+            }
             PyObject *new;
             new = PyArray_Copy(ap1);
             Py_DECREF(ap1);
@@ -565,8 +595,13 @@ cblas_matrixproduct(int typenum, PyArrayObject *ap1, PyArrayObject *ap2,
                 goto fail;
             }
         }
+        
+        if (__is_2d_flipped_matrix) {
+            incY = -1;
+        }
+
         NPY_BEGIN_ALLOW_THREADS
-        if (PyArray_ISCONTIGUOUS(ap1)) {
+        if (PyArray_ISCONTIGUOUS(ap1) || __is_2d_flipped_matrix) {
             Order = CblasRowMajor;
             lda = (PyArray_DIM(ap1, 1) > 1 ? PyArray_DIM(ap1, 1) : 1);
         }
@@ -575,7 +610,7 @@ cblas_matrixproduct(int typenum, PyArrayObject *ap1, PyArrayObject *ap2,
             lda = (PyArray_DIM(ap1, 0) > 1 ? PyArray_DIM(ap1, 0) : 1);
         }
         ap2s = PyArray_STRIDE(ap2, 0) / PyArray_ITEMSIZE(ap2);
-        gemv(typenum, Order, CblasNoTrans, ap1, lda, ap2, ap2s, out_buf);
+        gemv(typenum, Order, CblasNoTrans, ap1, lda, ap2, ap2s, out_buf, incY);
         NPY_END_ALLOW_THREADS;
     }
     else if (ap1shape != _matrix && ap2shape == _matrix) {
@@ -607,7 +642,7 @@ cblas_matrixproduct(int typenum, PyArrayObject *ap1, PyArrayObject *ap2,
         else {
             ap1s = PyArray_STRIDE(ap1, 0) / PyArray_ITEMSIZE(ap1);
         }
-        gemv(typenum, Order, CblasTrans, ap2, lda, ap1, ap1s, out_buf);
+        gemv(typenum, Order, CblasTrans, ap2, lda, ap1, ap1s, out_buf, 1);
         NPY_END_ALLOW_THREADS;
     }
     else {
