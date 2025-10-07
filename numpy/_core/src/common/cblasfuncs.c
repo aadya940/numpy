@@ -76,6 +76,12 @@ gemv(int typenum, enum CBLAS_ORDER order, enum CBLAS_TRANSPOSE trans,
         npy_intp elem_size = PyArray_ITEMSIZE(R);
         npy_intp n_elements = PyArray_DIM(R, 0);
         Rdata = (char*)Rdata + (n_elements - 1) * elem_size;
+
+        /* Adjust Adata pointer for flipped matrix A[::-1]
+        * Move from last row to first row of original matrix */
+        npy_intp m = PyArray_DIM(A, 0);
+        npy_intp row_stride = PyArray_STRIDE(A, 0);  // Negative value
+        Adata = (char*)Adata - (m - 1) * row_stride; // Points to (0, 0) now.
     }
 
     npy_intp m = PyArray_DIM(A, 0), n = PyArray_DIM(A, 1);
