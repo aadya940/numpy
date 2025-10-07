@@ -3454,6 +3454,25 @@ class TestMethods:
         c = np.zeros_like(a)
         a.dot(b=b, out=c)
         assert_equal(c, np.dot(a, b))
+    
+    def test_flipped_matrix_dot():
+        A = np.array([[1.0, 2.0],
+                    [3.0, 4.0],
+                    [5.0, 6.0]])
+
+        x = np.array([1.0, 1.0])
+
+        result = np.dot(A[::-1], x)
+        
+        # Expected result (manual calculation):
+        # A[::-1] = [[5, 6], [3, 4], [1, 2]]
+        # [5, 6] @ [1, 1] = 11
+        # [3, 4] @ [1, 1] = 7
+        # [1, 2] @ [1, 1] = 3
+        expected = np.array([11.0, 7.0, 3.0])
+        
+        np.testing.assert_allclose(result, expected)
+
 
     @pytest.mark.parametrize("dtype", [np.half, np.double, np.longdouble])
     @pytest.mark.skipif(IS_WASM, reason="no wasm fp exception support")
